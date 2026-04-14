@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Image to SVG (SAM3)</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body data-page="convert">
+    <div class="page convert-page">
+        <header class="topbar">
+            <div>
+                <div class="brand">Image to SVG Converter</div>
+                <div class="subtitle">Upload one image and run SAM3 segmentation + SVG assembly directly.</div>
+            </div>
+            <div class="topbar-actions">
+                <a class="ghost" href="/" rel="noreferrer">Back to Main</a>
+            </div>
+        </header>
+
+        <main class="convert-layout">
+            <section class="card">
+                <div class="field-group">
+                    <label class="field-label" for="convertFile">Source Image</label>
+                    <div class="upload-zone" id="convertUploadZone">
+                        <input id="convertFile" class="file-input" type="file" accept="image/*" />
+                        <div class="upload-text">Drop image here or click to upload</div>
+                    </div>
+                    <div class="upload-meta">
+                        <img id="convertPreview" class="upload-preview" alt="Source preview" />
+                        <div id="convertStatus" class="hint"></div>
+                    </div>
+                </div>
+
+                <div class="field-group">
+                    <label class="field-label" for="convertProvider">Provider</label>
+                    <select id="convertProvider" class="input">
+                        <option value="bianxie" selected>Bianxie</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="gemini">Gemini (Google)</option>
+                    </select>
+                    <div class="hint">`sk-` 开头通常用于 Bianxie/OpenRouter；Gemini 需使用 Google AI Studio 的 Gemini API Key。
+                    </div>
+                </div>
+
+                <div class="field-group">
+                    <label class="field-label" for="convertApiKey">API Key</label>
+                    <input id="convertApiKey" type="password" class="input" placeholder="sk-..." />
+                    <div class="hint">可留空：若 .env 已配置对应 Provider 的 API Key，将自动使用。</div>
+                </div>
+
+                <div class="field-row">
+                    <div class="field-group">
+                        <label class="field-label" for="convertOptimize">Optimize</label>
+                        <input id="convertOptimize" class="input" type="number" min="0" value="0" />
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label" for="convertSamBackend">SAM3 Backend</label>
+                        <select id="convertSamBackend" class="input">
+                            <option value="roboflow" selected>Roboflow API</option>
+                            <option value="fal">fal.ai API</option>
+                            <option value="local">Local (SAM3)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="field-group">
+                    <label class="field-label" for="convertSamPrompt">SAM Prompt</label>
+                    <input id="convertSamPrompt" type="text" class="input" value="icon,person,robot,animal" />
+                </div>
+
+                <div class="field-group" id="convertSamApiKeyGroup" hidden>
+                    <label class="field-label" for="convertSamApiKey">SAM3 API Key</label>
+                    <input id="convertSamApiKey" type="password" class="input" placeholder="FAL/Roboflow API key" />
+                </div>
+
+                <section class="actions">
+                    <button id="convertBtn" class="primary">Start -> Canvas</button>
+                </section>
+                <div id="convertError" class="error"></div>
+            </section>
+
+            <section class="card">
+                <label class="field-label">Preview</label>
+                <div class="convert-preview-shell">
+                    <img id="convertImagePreviewLarge" class="convert-image-preview-large" alt="Uploaded preview" />
+                    <object id="convertSvgObject" type="image/svg+xml" class="fallback-object"></object>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+
+</html>

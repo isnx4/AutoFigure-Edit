@@ -20,9 +20,11 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 WEB_DIR = BASE_DIR / "web"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +44,16 @@ SVG_EDIT_CANDIDATES = [
 ]
 
 SENSITIVE_CMD_FLAGS = {"--api_key", "--sam_api_key"}
+
+
+def _provider_env_api_key(provider: str) -> Optional[str]:
+    env_name = f"{provider.upper()}_API_KEY"
+    return os.environ.get(env_name) or os.environ.get("API_KEY")
+
+
+def _provider_env_base_url(provider: str) -> Optional[str]:
+    env_name = f"{provider.upper()}_BASE_URL"
+    return os.environ.get(env_name)
 
 
 def _resolve_svg_edit_path() -> tuple[bool, str | None]:
@@ -103,6 +115,21 @@ class RunRequest(BaseModel):
     reference_image_path: Optional[str] = None
 
 
+class RunFromImageRequest(BaseModel):
+    image_path: str = Field(..., min_length=1)
+    provider: str = "bianxie"
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    svg_model: Optional[str] = None
+    sam_prompt: Optional[str] = None
+    sam_backend: Optional[str] = None
+    sam_api_key: Optional[str] = None
+    sam_max_masks: Optional[int] = None
+    placeholder_mode: Optional[str] = None
+    merge_threshold: Optional[float] = None
+    optimize_iterations: Optional[int] = None
+
+
 app = FastAPI()
 
 JOBS: dict[str, Job] = {}
@@ -136,14 +163,110 @@ def run_job(req: RunRequest) -> JSONResponse:
         req.provider,
     ]
 
-    if req.api_key:
-        cmd += ["--api_key", req.api_key]
-    if req.base_url:
-        cmd += ["--base_url", req.base_url]
+    api_key = req.api_key or _provider_env_api_key(req.provider)
+    base_url = req.base_url or _provider_env_base_url(req.provider)
+    if api_key:
+        cmd += ["--api_key", api_key]
+    if base_url:
+        cmd += ["--base_url", base_url]
     if req.image_model:
         cmd += ["--image_model", req.image_model]
     if req.image_size:
         cmd += ["--image_size", req.image_size]
+    if req.svg_model:
+        cmd += ["--svg_model", req.svg_model]
+
+    sam_prompt = req.sam_prompt or DEFAULT_SAM_PROMPT
+    placeholder_mode = req.placeholder_mode or DEFAULT_PLACEHOLDER_MODE
+    merge_threshold = (
+        req.merge_threshold if req.merge_threshold is not None else DEFAULT_MERGE_THRESHOLD
+    )
+
+    cmd += ["--sam_prompt", sam_prompt]
+    cmd += ["--placeholder_mode", placeholder_mode]
+    cmd += ["--merge_threshold", str(merge_threshold)]
+    if req.sam_backend:
+        cmd += ["--sam_backend", req.sam_backend]
+    sam_api_key = req.sam_api_key
+    if not sam_api_key and (req.sam_backend or "").lower() == "roboflow":
+        sam_api_key = os.environ.get("ROBOFLOW_API_KEY") or os.environ.get("API_KEY")
+    if sam_api_key:
+        cmd += ["--sam_api_key", sam_api_key]
+    if req.sam_max_masks is not None:
+        cmd += ["--sam_max_masks", str(req.sam_max_masks)]
+    if req.optimize_iterations is not None:
+        cmd += ["--optimize_iterations", str(req.optimize_iterations)]
+
+    reference_path = req.reference_image_path
+    if reference_path:
+        reference_path = (
+            str((BASE_DIR / reference_path).resolve())
+            if not Path(reference_path).is_absolute()
+            else reference_path
+        )
+        cmd += ["--reference_image_path", reference_path]
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    log_path = output_dir / "run.log"
+    log_path.write_text(
+        f"[meta] python={PYTHON_EXECUTABLE}\n[meta] cmd={_redact_cmd_args(cmd)}\n",
+        encoding="utf-8",
+    )
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=env,
+        cwd=str(BASE_DIR),
+    )
+
+    job = Job(
+        job_id=job_id,
+        output_dir=output_dir,
+        process=process,
+        queue=queue.Queue(),
+        log_path=log_path,
+    )
+    JOBS[job_id] = job
+
+    monitor_thread = threading.Thread(target=_monitor_job, args=(job,), daemon=True)
+    monitor_thread.start()
+
+    return JSONResponse({"job_id": job_id})
+
+
+@app.post("/api/run_from_image")
+def run_from_image(req: RunFromImageRequest) -> JSONResponse:
+    job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+    output_dir = OUTPUTS_DIR / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    figure_path = req.image_path
+    if not Path(figure_path).is_absolute():
+        figure_path = str((BASE_DIR / figure_path).resolve())
+
+    cmd = [
+        PYTHON_EXECUTABLE,
+        str(BASE_DIR / "autofigure2.py"),
+        "--figure_path",
+        figure_path,
+        "--output_dir",
+        str(output_dir),
+        "--provider",
+        req.provider,
+    ]
+
+    api_key = req.api_key or _provider_env_api_key(req.provider)
+    base_url = req.base_url or _provider_env_base_url(req.provider)
+    if api_key:
+        cmd += ["--api_key", api_key]
+    if base_url:
+        cmd += ["--base_url", base_url]
     if req.svg_model:
         cmd += ["--svg_model", req.svg_model]
 
@@ -164,15 +287,6 @@ def run_job(req: RunRequest) -> JSONResponse:
         cmd += ["--sam_max_masks", str(req.sam_max_masks)]
     if req.optimize_iterations is not None:
         cmd += ["--optimize_iterations", str(req.optimize_iterations)]
-
-    reference_path = req.reference_image_path
-    if reference_path:
-        reference_path = (
-            str((BASE_DIR / reference_path).resolve())
-            if not Path(reference_path).is_absolute()
-            else reference_path
-        )
-        cmd += ["--reference_image_path", reference_path]
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"

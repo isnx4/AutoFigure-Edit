@@ -1,111 +1,103 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AutoFigure-Edit</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body data-page="input">
-    <div class="page">
-      <header class="topbar">
-        <div>
-          <div class="brand">AutoFigure-Edit</div>
-          <div class="subtitle">Generate SVG templates and preview every step.</div>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AutoFigure-Edit</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body data-page="input">
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <div class="brand">AutoFigure-Edit</div>
+        <div class="subtitle">Generate SVG templates and preview every step.</div>
+      </div>
+      <div class="topbar-actions">
+        <a class="ghost" href="/convert.html" target="_blank" rel="noreferrer">Image -> SVG Window</a>
+      </div>
+    </header>
+
+    <main class="input-layout">
+      <section class="card">
+        <label class="field-label" for="methodText">Method Text</label>
+        <textarea id="methodText" class="textarea" placeholder="Paste your paper method text here..."></textarea>
+        <div class="hint">Tip: concise, structured method text yields cleaner templates.</div>
+      </section>
+
+      <section class="card">
+        <div class="field-group">
+          <label class="field-label" for="provider">Provider</label>
+          <select id="provider" class="input">
+            <option value="bianxie">Bianxie</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="gemini" selected>Gemini (Google)</option>
+          </select>
         </div>
-      </header>
 
-      <main class="input-layout">
-        <section class="card">
-          <label class="field-label" for="methodText">Method Text</label>
-          <textarea
-            id="methodText"
-            class="textarea"
-            placeholder="Paste your paper method text here..."
-          ></textarea>
-          <div class="hint">Tip: concise, structured method text yields cleaner templates.</div>
-        </section>
+        <div class="field-group">
+          <label class="field-label" for="apiKey">API Key</label>
+          <input id="apiKey" type="password" class="input" placeholder="sk-..." />
+        </div>
 
-        <section class="card">
-          <div class="field-group">
-            <label class="field-label" for="provider">Provider</label>
-            <select id="provider" class="input">
-              <option value="bianxie">Bianxie</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="gemini" selected>Gemini (Google)</option>
-            </select>
+        <div class="field-group">
+          <label class="field-label" for="optimizeIterations">Optimize</label>
+          <input id="optimizeIterations" class="input" type="number" min="0" value="0" />
+        </div>
+
+        <div class="field-group" id="imageSizeGroup">
+          <label class="field-label" for="imageSize">Image Size</label>
+          <select id="imageSize" class="input">
+            <option value="1K">1K</option>
+            <option value="2K">2K</option>
+            <option value="4K" selected>4K</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label" for="samBackend">SAM3 Backend</label>
+          <select id="samBackend" class="input">
+            <option value="roboflow" selected>Roboflow API</option>
+            <option value="fal">fal.ai API</option>
+            <option value="local">Local (SAM3)</option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label" for="samPrompt">SAM Prompt</label>
+          <input id="samPrompt" type="text" class="input" value="icon,person,robot,animal"
+            placeholder="icon,person,robot,animal" />
+        </div>
+
+        <div class="field-group" id="samApiKeyGroup" hidden>
+          <label class="field-label" for="samApiKey">SAM3 API Key</label>
+          <input id="samApiKey" type="password" class="input" placeholder="FAL/Roboflow API key" />
+        </div>
+
+        <div class="field-group">
+          <label class="field-label" for="referenceFile">Reference Image</label>
+          <div class="upload-zone" id="uploadZone">
+            <input id="referenceFile" class="file-input" type="file" accept="image/*" />
+            <div class="upload-text">Drop image here or click to upload</div>
           </div>
-
-          <div class="field-group">
-            <label class="field-label" for="apiKey">API Key</label>
-            <input id="apiKey" type="password" class="input" placeholder="sk-..." />
+          <div class="upload-meta">
+            <img id="referencePreview" class="upload-preview" alt="Reference preview" />
+            <div id="referenceStatus" class="hint"></div>
           </div>
+        </div>
+      </section>
 
-          <div class="field-group">
-            <label class="field-label" for="optimizeIterations">Optimize</label>
-            <input id="optimizeIterations" class="input" type="number" min="0" value="0" />
-          </div>
+      <section class="actions">
+        <button id="confirmBtn" class="primary">Confirm -> Canvas</button>
+        <div id="errorMsg" class="error"></div>
+      </section>
+    </main>
+  </div>
 
-          <div class="field-group" id="imageSizeGroup">
-            <label class="field-label" for="imageSize">Image Size</label>
-            <select id="imageSize" class="input">
-              <option value="1K">1K</option>
-              <option value="2K">2K</option>
-              <option value="4K" selected>4K</option>
-            </select>
-          </div>
+  <script src="/app.js"></script>
+</body>
 
-          <div class="field-group">
-            <label class="field-label" for="samBackend">SAM3 Backend</label>
-            <select id="samBackend" class="input">
-              <option value="roboflow" selected>Roboflow API</option>
-              <option value="fal">fal.ai API</option>
-              <option value="local">Local (SAM3)</option>
-            </select>
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="samPrompt">SAM Prompt</label>
-            <input
-              id="samPrompt"
-              type="text"
-              class="input"
-              value="icon,person,robot,animal"
-              placeholder="icon,person,robot,animal"
-            />
-          </div>
-
-          <div class="field-group" id="samApiKeyGroup" hidden>
-            <label class="field-label" for="samApiKey">SAM3 API Key</label>
-            <input
-              id="samApiKey"
-              type="password"
-              class="input"
-              placeholder="FAL/Roboflow API key"
-            />
-          </div>
-
-          <div class="field-group">
-            <label class="field-label" for="referenceFile">Reference Image</label>
-            <div class="upload-zone" id="uploadZone">
-              <input id="referenceFile" class="file-input" type="file" accept="image/*" />
-              <div class="upload-text">Drop image here or click to upload</div>
-            </div>
-            <div class="upload-meta">
-              <img id="referencePreview" class="upload-preview" alt="Reference preview" />
-              <div id="referenceStatus" class="hint"></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="actions">
-          <button id="confirmBtn" class="primary">Confirm -> Canvas</button>
-          <div id="errorMsg" class="error"></div>
-        </section>
-      </main>
-    </div>
-
-    <script src="/app.js"></script>
-  </body>
 </html>

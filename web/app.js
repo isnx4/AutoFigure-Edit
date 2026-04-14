@@ -6,6 +6,8 @@
     initInputPage();
   } else if (page === "canvas") {
     initCanvasPage();
+  } else if (page === "convert") {
+    initConvertPage();
   }
 
   function $(id) {
@@ -455,6 +457,208 @@
       }
       return false;
     }
+  }
+
+  function initConvertPage() {
+    const uploadZone = $("convertUploadZone");
+    const fileInput = $("convertFile");
+    const preview = $("convertPreview");
+    const status = $("convertStatus");
+    const providerInput = $("convertProvider");
+    const apiKeyInput = $("convertApiKey");
+    const optimizeInput = $("convertOptimize");
+    const samBackendInput = $("convertSamBackend");
+    const samPromptInput = $("convertSamPrompt");
+    const samApiKeyGroup = $("convertSamApiKeyGroup");
+    const samApiKeyInput = $("convertSamApiKey");
+    const convertBtn = $("convertBtn");
+    const errorMsg = $("convertError");
+    const largePreview = $("convertImagePreviewLarge");
+    const svgObject = $("convertSvgObject");
+
+    let uploadedImagePath = "";
+    let isUploading = false;
+    let objectUrl = "";
+
+    function clearObjectUrl() {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = "";
+      }
+    }
+
+    function setSource(file) {
+      if (!file || !file.type.startsWith("image/")) {
+        errorMsg.textContent = "Please choose an image file.";
+        return;
+      }
+      errorMsg.textContent = "";
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || "");
+        preview.src = dataUrl;
+        preview.classList.add("visible");
+        if (largePreview) {
+          largePreview.src = dataUrl;
+          largePreview.classList.add("visible");
+        }
+        if (svgObject) {
+          svgObject.data = "";
+        }
+        status.textContent = `Loaded: ${file.name}, uploading...`;
+      };
+      reader.onerror = () => {
+        errorMsg.textContent = "Failed to read image.";
+      };
+      reader.readAsDataURL(file);
+      uploadImage(file);
+    }
+
+    function updatePreviewFromSvg(svgText) {
+      clearObjectUrl();
+      const blob = new Blob([svgText], { type: "image/svg+xml" });
+      objectUrl = URL.createObjectURL(blob);
+      svgObject.data = objectUrl;
+    }
+
+    async function uploadImage(file) {
+      isUploading = true;
+      if (convertBtn) {
+        convertBtn.disabled = true;
+        convertBtn.textContent = "Uploading...";
+      }
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const response = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || "Upload failed");
+        }
+        const data = await response.json();
+        uploadedImagePath = data.path || "";
+        status.textContent = `Uploaded: ${data.name}`;
+        errorMsg.textContent = "";
+      } catch (err) {
+        uploadedImagePath = "";
+        status.textContent = "Upload failed.";
+        errorMsg.textContent = err?.message || "Upload failed.";
+      } finally {
+        isUploading = false;
+        if (convertBtn) {
+          convertBtn.disabled = false;
+          convertBtn.textContent = "Start -> Canvas";
+        }
+      }
+    }
+
+    function syncSamApiKeyVisibility() {
+      const shouldShow =
+        samBackendInput &&
+        (samBackendInput.value === "fal" || samBackendInput.value === "roboflow");
+      if (samApiKeyGroup) {
+        samApiKeyGroup.hidden = !shouldShow;
+      }
+      if (!shouldShow && samApiKeyInput) {
+        samApiKeyInput.value = "";
+      }
+    }
+
+    if (uploadZone && fileInput) {
+      uploadZone.addEventListener("click", () => fileInput.click());
+      uploadZone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        uploadZone.classList.add("dragging");
+      });
+      uploadZone.addEventListener("dragleave", () => {
+        uploadZone.classList.remove("dragging");
+      });
+      uploadZone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        uploadZone.classList.remove("dragging");
+        const file = event.dataTransfer?.files?.[0];
+        if (file) {
+          setSource(file);
+        }
+      });
+
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        if (file) {
+          setSource(file);
+        }
+      });
+    }
+
+    samBackendInput?.addEventListener("change", syncSamApiKeyVisibility);
+    syncSamApiKeyVisibility();
+
+    convertBtn?.addEventListener("click", async () => {
+      errorMsg.textContent = "";
+      if (isUploading) {
+        errorMsg.textContent = "Image is still uploading. Please wait.";
+        return;
+      }
+      if (!uploadedImagePath) {
+        errorMsg.textContent = "Please upload an image first.";
+        return;
+      }
+
+      convertBtn.disabled = true;
+      convertBtn.textContent = "Starting...";
+      status.textContent = "Starting SAM3 + SVG pipeline...";
+
+      const provider = providerInput?.value || "bianxie";
+      const providerKey = apiKeyInput?.value.trim() || "";
+      if (provider === "gemini" && providerKey.startsWith("sk-")) {
+        errorMsg.textContent = "当前 Provider 是 Gemini，但 API Key 看起来是 sk-*（通常不是 Gemini Key）。请切换到 Bianxie/OpenRouter 或填入有效 Gemini Key。";
+        return;
+      }
+
+      const payload = {
+        image_path: uploadedImagePath,
+        provider,
+        api_key: providerKey || null,
+        optimize_iterations: Number.parseInt(optimizeInput?.value || "0", 10) || 0,
+        sam_backend: samBackendInput?.value || "roboflow",
+        sam_prompt: samPromptInput?.value.trim() || null,
+        sam_api_key: samApiKeyInput?.value.trim() || null,
+      };
+      if (payload.sam_backend === "local") {
+        payload.sam_api_key = null;
+      }
+
+      try {
+        const response = await fetch("/api/run_from_image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error("Endpoint /api/run_from_image not found. Please restart server.py to load latest backend changes.");
+          }
+          const text = await response.text();
+          throw new Error(text || "Request failed");
+        }
+        const data = await response.json();
+        status.textContent = "Job started, opening canvas...";
+        window.location.href = `/canvas.html?job=${encodeURIComponent(data.job_id)}`;
+      } catch (err) {
+        errorMsg.textContent = err?.message || "Conversion failed.";
+        status.textContent = "Failed to start conversion.";
+      } finally {
+        convertBtn.disabled = false;
+        convertBtn.textContent = "Start -> Canvas";
+      }
+    });
+
+    window.addEventListener("beforeunload", () => {
+      clearObjectUrl();
+    });
   }
 
   function appendLogLine(container, data) {

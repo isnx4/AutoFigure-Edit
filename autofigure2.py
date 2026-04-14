@@ -1461,6 +1461,10 @@ def _call_sam3_roboflow_api(
         "format": "polygon",
         "output_prob_thresh": min_score,
     }
+
+    ssl_verify_env = os.environ.get("ROBOFLOW_SSL_VERIFY", "1").strip().lower()
+    verify_ssl = ssl_verify_env not in {"0", "false", "no", "off"}
+
     def _is_dns_error(exc: Exception) -> bool:
         msg = str(exc)
         patterns = [
@@ -1469,6 +1473,18 @@ def _call_sam3_roboflow_api(
             "getaddrinfo failed",
             "nodename nor servname provided",
             "gaierror",
+        ]
+        return any(p in msg for p in patterns)
+
+    def _is_ssl_error(exc: Exception) -> bool:
+        msg = str(exc)
+        patterns = [
+            "SSLError",
+            "SSLEOFError",
+            "EOF occurred in violation of protocol",
+            "CERTIFICATE_VERIFY_FAILED",
+            "wrong version number",
+            "TLS",
         ]
         return any(p in msg for p in patterns)
 
@@ -1489,11 +1505,20 @@ def _call_sam3_roboflow_api(
 
     last_error: Optional[Exception] = None
 
+    if not verify_ssl:
+        print("警告: 已禁用 Roboflow SSL 证书校验（ROBOFLOW_SSL_VERIFY=0）")
+
     for endpoint in endpoint_urls:
-        url = f"{endpoint}?api_key={api_key}"
+        safe_url = f"{endpoint}?api_key=***"
         for attempt in range(1, retry_count + 1):
             try:
-                response = requests.post(url, json=payload, timeout=SAM3_API_TIMEOUT)
+                response = requests.post(
+                    endpoint,
+                    params={"api_key": api_key},
+                    json=payload,
+                    timeout=SAM3_API_TIMEOUT,
+                    verify=verify_ssl,
+                )
                 if response.status_code != 200:
                     raise Exception(
                         f"SAM3 Roboflow API 错误: {response.status_code} - {response.text[:500]}"
@@ -1503,11 +1528,12 @@ def _call_sam3_roboflow_api(
                     raise Exception(f"SAM3 Roboflow API 错误: {result.get('error')}")
                 return result
             except requests.exceptions.RequestException as e:
-                last_error = e
+                safe_exc = Exception(_redact_secret(str(e)).replace(endpoint, safe_url))
+                last_error = safe_exc
                 # DNS/网络偶发问题时做指数退避重试
                 if attempt < retry_count:
                     sleep_s = retry_delay * (2 ** (attempt - 1))
-                    safe_error = _redact_secret(str(e))
+                    safe_error = str(safe_exc)
                     print(
                         f"    Roboflow 请求失败（尝试 {attempt}/{retry_count}）：{safe_error}，"
                         f"{sleep_s:.1f}s 后重试..."
@@ -1527,10 +1553,20 @@ def _call_sam3_roboflow_api(
             "1) 在 docker-compose.yml 设置 dns（如 223.5.5.5 / 119.29.29.29）；\n"
             "2) 在 .env 里设置 ROBOFLOW_API_URL 或 ROBOFLOW_API_FALLBACK_URLS；\n"
             "3) 临时改用 --sam_backend fal（需 FAL_KEY）。"
-        ) from last_error
+        )
+
+    if last_error is not None and _is_ssl_error(last_error):
+        raise RuntimeError(
+            "SAM3 Roboflow TLS/SSL 握手失败（常见于网络代理或运营商链路中断导致的 EOF）。\n"
+            "可用修复：\n"
+            "1) 切换网络（如手机热点）验证是否为当前出口链路问题；\n"
+            "2) 在 .env 设置 ROBOFLOW_API_URL / ROBOFLOW_API_FALLBACK_URLS 到可达端点；\n"
+            "3) 临时在 .env 设置 ROBOFLOW_SSL_VERIFY=0 后重试（仅用于排障，不建议长期开启）；\n"
+            "4) 若仍失败，改用 --sam_backend fal 或 local。"
+        )
 
     if last_error is not None:
-        raise RuntimeError(f"SAM3 Roboflow 请求失败：{_redact_secret(str(last_error))}") from last_error
+        raise RuntimeError(f"SAM3 Roboflow 请求失败：{_redact_secret(str(last_error))}")
 
     raise RuntimeError("SAM3 Roboflow 请求失败：未知错误")
 
@@ -2836,7 +2872,8 @@ Please carefully compare and check the following **TWO MAJOR ASPECTS with EIGHT 
 # ============================================================================
 
 def method_to_svg(
-    method_text: str,
+    method_text: Optional[str] = None,
+    figure_path: Optional[str] = None,
     output_dir: str = "./output",
     api_key: str = None,
     base_url: str = None,
@@ -2856,10 +2893,11 @@ def method_to_svg(
     image_size: str = GEMINI_DEFAULT_IMAGE_SIZE,
 ) -> dict:
     """
-    完整流程：Paper Method → SVG with Icons
+    完整流程：Paper Method/Uploaded Image → SVG with Icons
 
     Args:
-        method_text: Paper method 文本内容
+        method_text: Paper method 文本内容（可选，figure_path 为空时必填）
+        figure_path: 输入图片路径（可选，提供后跳过步骤一生图）
         output_dir: 输出目录
         api_key: API Key
         base_url: API base URL
@@ -2885,6 +2923,8 @@ def method_to_svg(
     """
     if not api_key:
         raise ValueError("必须提供 api_key")
+    if not method_text and not figure_path:
+        raise ValueError("必须提供 method_text 或 figure_path")
 
     # 获取默认配置
     config = PROVIDER_CONFIGS[provider]
@@ -2919,24 +2959,31 @@ def method_to_svg(
         print(f"生图分辨率: {image_size}")
     print("=" * 60)
 
-    # 步骤一：生成图片
-    figure_path = output_dir / "figure.png"
-    generate_figure_from_method(
-        method_text=method_text,
-        output_path=str(figure_path),
-        api_key=api_key,
-        model=image_gen_model,
-        base_url=base_url,
-        provider=provider,
-        image_size=image_size,
-    )
+    # 步骤一：生成图片 / 复制输入图片
+    figure_output_path = output_dir / "figure.png"
+    if figure_path:
+        source_figure = Path(figure_path)
+        if not source_figure.is_file():
+            raise FileNotFoundError(f"输入图片不存在: {figure_path}")
+        shutil.copyfile(source_figure, figure_output_path)
+        print("步骤一：跳过文生图，使用输入图片作为 figure.png")
+    else:
+        generate_figure_from_method(
+            method_text=method_text,
+            output_path=str(figure_output_path),
+            api_key=api_key,
+            model=image_gen_model,
+            base_url=base_url,
+            provider=provider,
+            image_size=image_size,
+        )
 
     if stop_after == 1:
         print("\n" + "=" * 60)
         print("已在步骤 1 后停止")
         print("=" * 60)
         return {
-            "figure_path": str(figure_path),
+            "figure_path": str(figure_output_path),
             "samed_path": None,
             "boxlib_path": None,
             "icon_infos": [],
@@ -2947,7 +2994,7 @@ def method_to_svg(
 
     # 步骤二：SAM3 分割（包含Box合并）
     samed_path, boxlib_path, valid_boxes = segment_with_sam3(
-        image_path=str(figure_path),
+        image_path=str(figure_output_path),
         output_dir=str(output_dir),
         text_prompts=sam_prompts,
         min_score=min_score,
@@ -2968,7 +3015,7 @@ def method_to_svg(
         print("已在步骤 2 后停止")
         print("=" * 60)
         return {
-            "figure_path": str(figure_path),
+            "figure_path": str(figure_output_path),
             "samed_path": samed_path,
             "boxlib_path": boxlib_path,
             "icon_infos": [],
@@ -2984,7 +3031,7 @@ def method_to_svg(
     else:
         _ensure_rmbg2_access_ready(rmbg_model_path)
         icon_infos = crop_and_remove_background(
-            image_path=str(figure_path),
+            image_path=str(figure_output_path),
             boxlib_path=boxlib_path,
             output_dir=str(output_dir),
             rmbg_model_path=rmbg_model_path,
@@ -2995,7 +3042,7 @@ def method_to_svg(
         print("已在步骤 3 后停止")
         print("=" * 60)
         return {
-            "figure_path": str(figure_path),
+            "figure_path": str(figure_output_path),
             "samed_path": samed_path,
             "boxlib_path": boxlib_path,
             "icon_infos": icon_infos,
@@ -3010,7 +3057,7 @@ def method_to_svg(
     final_svg_path = output_dir / "final.svg"
     try:
         generate_svg_template(
-            figure_path=str(figure_path),
+            figure_path=str(figure_output_path),
             samed_path=samed_path,
             boxlib_path=boxlib_path,
             output_path=str(template_svg_path),
@@ -3024,7 +3071,7 @@ def method_to_svg(
 
         # 步骤 4.6：LLM 优化 SVG 模板（可配置迭代次数，0 表示跳过）
         optimize_svg_with_llm(
-            figure_path=str(figure_path),
+            figure_path=str(figure_output_path),
             samed_path=samed_path,
             final_svg_path=str(template_svg_path),
             output_path=str(optimized_template_path),
@@ -3041,7 +3088,7 @@ def method_to_svg(
             raise
         print(f"无图标模式下 SVG 重建失败（{exc}），改用内嵌原图的保底 SVG")
         create_embedded_figure_svg(
-            figure_path=str(figure_path),
+            figure_path=str(figure_output_path),
             output_path=str(final_svg_path),
         )
 
@@ -3050,7 +3097,7 @@ def method_to_svg(
         print("已在步骤 4 后停止")
         print("=" * 60)
         return {
-            "figure_path": str(figure_path),
+            "figure_path": str(figure_output_path),
             "samed_path": samed_path,
             "boxlib_path": boxlib_path,
             "icon_infos": icon_infos,
@@ -3069,7 +3116,7 @@ def method_to_svg(
         else:
             print("无图标模式缺少模板 SVG，生成保底 final.svg")
             create_embedded_figure_svg(
-                figure_path=str(figure_path),
+                figure_path=str(figure_output_path),
                 output_path=str(final_svg_path),
             )
     else:
@@ -3078,7 +3125,7 @@ def method_to_svg(
         print("步骤 4.7：坐标系对齐")
         print("-" * 50)
 
-        figure_img = Image.open(figure_path)
+        figure_img = Image.open(figure_output_path)
         figure_width, figure_height = figure_img.size
         print(f"原图尺寸: {figure_width} x {figure_height}")
 
@@ -3114,7 +3161,7 @@ def method_to_svg(
     print("\n" + "=" * 60)
     print("流程完成！")
     print("=" * 60)
-    print(f"原始图片: {figure_path}")
+    print(f"原始图片: {figure_output_path}")
     print(f"标记图片: {samed_path}")
     print(f"Box信息: {boxlib_path}")
     print(f"图标数量: {len(icon_infos)}")
@@ -3123,7 +3170,7 @@ def method_to_svg(
     print(f"最终SVG: {final_svg_path}")
 
     return {
-        "figure_path": str(figure_path),
+        "figure_path": str(figure_output_path),
         "samed_path": samed_path,
         "boxlib_path": boxlib_path,
         "icon_infos": icon_infos,
@@ -3170,9 +3217,10 @@ if __name__ == "__main__":
     )
 
     # 输入参数
-    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group = parser.add_mutually_exclusive_group(required=False)
     input_group.add_argument("--method_text", help="Paper method 文本内容")
-    input_group.add_argument("--method_file", default="./paper.txt", help="包含 paper method 的文本文件路径")
+    input_group.add_argument("--figure_path", default=None, help="输入图片路径（提供后跳过步骤一生图）")
+    parser.add_argument("--method_file", default="./paper.txt", help="包含 paper method 的文本文件路径")
 
     # 输出参数
     parser.add_argument("--output_dir", default="./output", help="输出目录（默认: ./output）")
@@ -3272,15 +3320,19 @@ if __name__ == "__main__":
     if REFERENCE_IMAGE_PATH:
         USE_REFERENCE_IMAGE = True
 
-    # 获取 method 文本：优先使用 --method_text
+    if args.figure_path and not Path(args.figure_path).is_file():
+        parser.error(f"输入图片不存在: {args.figure_path}")
+
+    # 获取 method 文本：仅在未提供 --figure_path 时需要
     method_text = args.method_text
-    if method_text is None:
+    if not args.figure_path and method_text is None:
         with open(args.method_file, 'r', encoding='utf-8') as f:
             method_text = f.read()
 
     # 运行完整流程
     result = method_to_svg(
         method_text=method_text,
+        figure_path=args.figure_path,
         output_dir=args.output_dir,
         api_key=args.api_key,
         base_url=args.base_url,
